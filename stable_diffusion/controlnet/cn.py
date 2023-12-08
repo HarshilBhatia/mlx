@@ -6,9 +6,14 @@ import mlx.core as mx
 import mlx.nn as nn
 
 
+def zero_module(module):
+    for p in module.parameters():
+        nn.init.zeros_(p)
+    return module
+
 class ControlNetConditioningEmbedding(nn.Module):
     """
-    Direct replication of the controlnet code."
+    Direct replication of the controlnet code, adjusted for MLX"
     """
 
     def __init__(
@@ -158,13 +163,10 @@ class ControlNetModel(nn.Module):
     ):
         super().__init__()
         """
-        hb: Things I'm getting rid of: 
-        1. controlnet_conditioning_channel_order: 'rgb' / 'bgr' generalisability. 
-        2.  
-
-
+        Need to pass some kind of config here for unet
 
         """
+        #TODO: Unet block abstraction has to be done here.  
 
         num_attention_heads = num_attention_heads or attention_head_dim
 
@@ -198,6 +200,8 @@ class ControlNetModel(nn.Module):
         time_embed_dim = block_out_channels[0] * 4
         self.time_proj = Timesteps(block_out_channels[0], flip_sin_to_cos, freq_shift)
         timestep_input_dim = block_out_channels[0]
+
+        #  TODO: Change according to unet. 
         self.time_embedding = TimestepEmbedding(
             timestep_input_dim,
             time_embed_dim,
@@ -310,7 +314,8 @@ class ControlNetModel(nn.Module):
             output_channel = block_out_channels[i]
             is_final_block = i == len(block_out_channels) - 1
 
-            down_block = get_down_block(
+            # hb: This is not abstracted in unet properly like it's in Diffusers
+            down_block = get_down_block( 
                 down_block_type,
                 num_layers=layers_per_block,
                 transformer_layers_per_block=transformer_layers_per_block[i],
