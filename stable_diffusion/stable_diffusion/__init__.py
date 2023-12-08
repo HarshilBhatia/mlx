@@ -2,7 +2,6 @@
 
 import time
 from typing import Tuple
-
 import mlx.core as mx
 
 from .model_io import (
@@ -25,7 +24,7 @@ def _repeat(x, n, axis):
     x = mx.broadcast_to(mx.expand_dims(x, axis + 1), s)
 
     # Make the flattened shape
-    s.pop(axis + 1)
+    s.pop(axis + 1)``
     s[axis] *= n
 
     return x.reshape(s)
