@@ -427,67 +427,16 @@ class ControlNetModel(nn.Module):
 
 
         # prepare attention_mask\
-        
+        # TODO: re-add attention mask and encoder attn_mask.
+        # 
+
         # 1. time
-        timesteps = timestep
-        if not torch.is_tensor(timesteps):
-            # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
-            # This would be a good case for the `match` statement (Python 3.10+)
-            is_mps = sample.device.type == "mps"
-            if isinstance(timestep, float):
-                dtype = torch.float32 if is_mps else torch.float64
-            else:
-                dtype = torch.int32 if is_mps else torch.int64
-            timesteps = torch.tensor([timesteps], dtype=dtype, device=sample.device)
-        elif len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
-
-        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps.expand(sample.shape[0])
-
-        t_emb = self.time_proj(timesteps)
-
-        # timesteps does not contain any weights and will always return f32 tensors
-        # but time_embedding might actually be running in fp16. so we need to cast here.
-        # there might be better ways to encapsulate this.
+        timesteps = timestep # see if this is correct input
+        temb = self.timesteps(timesteps)
         t_emb = t_emb.to(dtype=sample.dtype)
 
         emb = self.time_embedding(t_emb, timestep_cond)
         aug_emb = None
-
-        if self.class_embedding is not None:
-            if class_labels is None:
-                raise ValueError("class_labels should be provided when num_class_embeds > 0")
-
-            if self.config.class_embed_type == "timestep":
-                class_labels = self.time_proj(class_labels)
-
-            class_emb = self.class_embedding(class_labels).to(dtype=self.dtype)
-            emb = emb + class_emb
-
-        if self.config.addition_embed_type is not None:
-            if self.config.addition_embed_type == "text":
-                aug_emb = self.add_embedding(encoder_hidden_states)
-
-            elif self.config.addition_embed_type == "text_time":
-                if "text_embeds" not in added_cond_kwargs:
-                    raise ValueError(
-                        f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
-                    )
-                text_embeds = added_cond_kwargs.get("text_embeds")
-                if "time_ids" not in added_cond_kwargs:
-                    raise ValueError(
-                        f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
-                    )
-                time_ids = added_cond_kwargs.get("time_ids")
-                time_embeds = self.add_time_proj(time_ids.flatten())
-                time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
-
-                add_embeds = torch.concat([text_embeds, time_embeds], dim=-1)
-                add_embeds = add_embeds.to(emb.dtype)
-                aug_emb = self.add_embedding(add_embeds)
-
-        emb = emb + aug_emb if aug_emb is not None else emb
 
         # 2. pre-process
         sample = self.conv_in(sample)
@@ -498,32 +447,23 @@ class ControlNetModel(nn.Module):
         # 3. down
         down_block_res_samples = (sample,)
         for downsample_block in self.down_blocks:
-            if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
-                sample, res_samples = downsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                )
-            else:
-                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+            # if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
+            sample, res_samples = downsample_block(
+                hidden_states=sample,
+                temb=emb,
+                encoder_hidden_states=encoder_hidden_states,
+                attention_mask=attention_mask,
+                cross_attention_kwargs=cross_attention_kwargs,
+            )
 
             down_block_res_samples += res_samples
 
         # 4. mid
-        if self.mid_block is not None:
-            if hasattr(self.mid_block, "has_cross_attention") and self.mid_block.has_cross_attention:
-                sample = self.mid_block(
-                    sample,
-                    emb,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                )
-            else:
-                sample = self.mid_block(sample, emb)
 
+        sample = self.mid_blocks[0](sample, temb)
+        sample = self.mid_blocks[1](sample, encoder_x, attn_mask, encoder_attn_mask)
+        sample = self.mid_blocks[2](sample, temb)
+        
         # 5. Control net blocks
 
         controlnet_down_block_res_samples = ()
@@ -537,25 +477,10 @@ class ControlNetModel(nn.Module):
         mid_block_res_sample = self.controlnet_mid_block(sample)
 
         # 6. scaling
-        if guess_mode and not self.config.global_pool_conditions:
-            scales = torch.logspace(-1, 0, len(down_block_res_samples) + 1, device=sample.device)  # 0.1 to 1.0
-            scales = scales * conditioning_scale
-            down_block_res_samples = [sample * scale for sample, scale in zip(down_block_res_samples, scales)]
-            mid_block_res_sample = mid_block_res_sample * scales[-1]  # last one
-        else:
-            down_block_res_samples = [sample * conditioning_scale for sample in down_block_res_samples]
-            mid_block_res_sample = mid_block_res_sample * conditioning_scale
+        # guess mode switched off
+        down_block_res_samples = [sample * conditioning_scale for sample in down_block_res_samples]
+        mid_block_res_sample = mid_block_res_sample * conditioning_scale
 
-        if self.config.global_pool_conditions:
-            down_block_res_samples = [
-                torch.mean(sample, dim=(2, 3), keepdim=True) for sample in down_block_res_samples
-            ]
-            mid_block_res_sample = torch.mean(mid_block_res_sample, dim=(2, 3), keepdim=True)
+        return down_block_res_samples, mid_block_res_sample
 
-        if not return_dict:
-            return (down_block_res_samples, mid_block_res_sample)
-
-        return ControlNetOutput(
-            down_block_res_samples=down_block_res_samples, mid_block_res_sample=mid_block_res_sample
-        )
-
+       
