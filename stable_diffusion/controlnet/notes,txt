@@ -1,0 +1,4 @@
+NOTES
+1. They use normal Unet2Dmodel not a conditional Unet
+2. They have not implemented attention_slicing in their Unet :-> This slicing will help us to save memory in exchange for some speed! 
+3. No attention mask is implemented ( idk what this does anyways)

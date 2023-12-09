@@ -4,9 +4,10 @@ from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-
+from unet import TimestepEmbedding, TransformerBlock, Transformer2D, ResnetBlock2D, UNetBlock2D 
 
 def zero_module(module):
+    #  TODO: check why this is used.  
     for p in module.parameters():
         nn.init.zeros_(p)
     return module
@@ -119,11 +120,10 @@ class ControlNetModel(nn.Module):
             The number of heads to use for the `TextTimeEmbedding` layer.
     """
 
-    _supports_gradient_checkpointing = True
 
-    @register_to_config
     def __init__(
         self,
+        config, # unet config 
         in_channels: int = 4,
         conditioning_channels: int = 3,
         flip_sin_to_cos: bool = True,
@@ -151,7 +151,7 @@ class ControlNetModel(nn.Module):
         num_attention_heads: Optional[Union[int, Tuple[int, ...]]] = None,
         use_linear_projection: bool = False,
         class_embed_type: Optional[str] = None,
-        addition_embed_type: Optional[str] = None,
+        addition_embed_type: Optional[str] = None, 
         addition_time_embed_dim: Optional[int] = None,
         num_class_embeds: Optional[int] = None,
         upcast_attention: bool = False,
@@ -160,139 +160,62 @@ class ControlNetModel(nn.Module):
         conditioning_embedding_out_channels: Optional[Tuple[int, ...]] = (16, 32, 96, 256),
         global_pool_conditions: bool = False,
         addition_embed_type_num_heads: int = 64,
-    ):
+    ): # TODO adjust arguments 
+
         super().__init__()
         """
         Need to pass some kind of config here for unet
 
         """
-        #TODO: Unet block abstraction has to be done here.  
+        # Status: Done. 
+        # Small TODOs are left and __init__ args is left
+
+        # Things I have skipped
+        # class embedding 
+        # encoder_hid_proj
+        # addition_embed_type 
 
         num_attention_heads = num_attention_heads or attention_head_dim
 
-        # Check inputs
-        if len(block_out_channels) != len(down_block_types):
-            raise ValueError(
-                f"Must provide the same number of `block_out_channels` as `down_block_types`. `block_out_channels`: {block_out_channels}. `down_block_types`: {down_block_types}."
-            )
-
-        if not isinstance(only_cross_attention, bool) and len(only_cross_attention) != len(down_block_types):
-            raise ValueError(
-                f"Must provide the same number of `only_cross_attention` as `down_block_types`. `only_cross_attention`: {only_cross_attention}. `down_block_types`: {down_block_types}."
-            )
-
-        if not isinstance(num_attention_heads, int) and len(num_attention_heads) != len(down_block_types):
-            raise ValueError(
-                f"Must provide the same number of `num_attention_heads` as `down_block_types`. `num_attention_heads`: {num_attention_heads}. `down_block_types`: {down_block_types}."
-            )
-
-        if isinstance(transformer_layers_per_block, int):
-            transformer_layers_per_block = [transformer_layers_per_block] * len(down_block_types)
+        # hb: we have config.block_out_channels instead
 
         # input
-        conv_in_kernel = 3
-        conv_in_padding = (conv_in_kernel - 1) // 2
         self.conv_in = nn.Conv2d(
-            in_channels, block_out_channels[0], kernel_size=conv_in_kernel, padding=conv_in_padding
+            config.in_channels,
+            config.block_out_channels[0],
+            config.conv_in_kernel,
+            padding=(config.conv_in_kernel - 1) // 2,
         )
+        
+        # time 
+        self.timesteps = nn.SinusoidalPositionalEncoding(
+            config.block_out_channels[0],
+            max_freq=1,
+            min_freq=math.exp(
+                -math.log(10000) + 2 * math.log(10000) / config.block_out_channels[0]
+            ),
+            scale=1.0,
+            cos_first=True,
+            full_turns=False,
+        ) # time_proj in diffusers notation
 
-        # time
-        time_embed_dim = block_out_channels[0] * 4
-        self.time_proj = Timesteps(block_out_channels[0], flip_sin_to_cos, freq_shift)
-        timestep_input_dim = block_out_channels[0]
-
-        #  TODO: Change according to unet. 
+        # time embedding
         self.time_embedding = TimestepEmbedding(
-            timestep_input_dim,
-            time_embed_dim,
-            act_fn=act_fn,
+            config.block_out_channels[0],
+            config.block_out_channels[0] * 4,
         )
-
-        if encoder_hid_dim_type is None and encoder_hid_dim is not None:
-            encoder_hid_dim_type = "text_proj"
-            self.register_to_config(encoder_hid_dim_type=encoder_hid_dim_type)
-            logger.info("encoder_hid_dim_type defaults to 'text_proj' as `encoder_hid_dim` is defined.")
-
-        if encoder_hid_dim is None and encoder_hid_dim_type is not None:
-            raise ValueError(
-                f"`encoder_hid_dim` has to be defined when `encoder_hid_dim_type` is set to {encoder_hid_dim_type}."
-            )
-
-        if encoder_hid_dim_type == "text_proj":
-            self.encoder_hid_proj = nn.Linear(encoder_hid_dim, cross_attention_dim)
-        elif encoder_hid_dim_type == "text_image_proj":
-            # image_embed_dim DOESN'T have to be `cross_attention_dim`. To not clutter the __init__ too much
-            # they are set to `cross_attention_dim` here as this is exactly the required dimension for the currently only use
-            # case when `addition_embed_type == "text_image_proj"` (Kadinsky 2.1)`
-            self.encoder_hid_proj = TextImageProjection(
-                text_embed_dim=encoder_hid_dim,
-                image_embed_dim=cross_attention_dim,
-                cross_attention_dim=cross_attention_dim,
-            )
-
-        elif encoder_hid_dim_type is not None:
-            raise ValueError(
-                f"encoder_hid_dim_type: {encoder_hid_dim_type} must be None, 'text_proj' or 'text_image_proj'."
-            )
-        else:
-            self.encoder_hid_proj = None
-
-        # class embedding
-        if class_embed_type is None and num_class_embeds is not None:
-            self.class_embedding = nn.Embedding(num_class_embeds, time_embed_dim)
-        elif class_embed_type == "timestep":
-            self.class_embedding = TimestepEmbedding(timestep_input_dim, time_embed_dim)
-        elif class_embed_type == "identity":
-            self.class_embedding = nn.Identity(time_embed_dim, time_embed_dim)
-        elif class_embed_type == "projection":
-            if projection_class_embeddings_input_dim is None:
-                raise ValueError(
-                    "`class_embed_type`: 'projection' requires `projection_class_embeddings_input_dim` be set"
-                )
-            # The projection `class_embed_type` is the same as the timestep `class_embed_type` except
-            # 1. the `class_labels` inputs are not first converted to sinusoidal embeddings
-            # 2. it projects from an arbitrary input dimension.
-            #
-            # Note that `TimestepEmbedding` is quite general, being mainly linear layers and activations.
-            # When used for embedding actual timesteps, the timesteps are first converted to sinusoidal embeddings.
-            # As a result, `TimestepEmbedding` can be passed arbitrary vectors.
-            self.class_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
-        else:
-            self.class_embedding = None
-
-        if addition_embed_type == "text":
-            if encoder_hid_dim is not None:
-                text_time_embedding_from_dim = encoder_hid_dim
-            else:
-                text_time_embedding_from_dim = cross_attention_dim
-
-            self.add_embedding = TextTimeEmbedding(
-                text_time_embedding_from_dim, time_embed_dim, num_heads=addition_embed_type_num_heads
-            )
-        elif addition_embed_type == "text_image":
-            # text_embed_dim and image_embed_dim DON'T have to be `cross_attention_dim`. To not clutter the __init__ too much
-            # they are set to `cross_attention_dim` here as this is exactly the required dimension for the currently only use
-            # case when `addition_embed_type == "text_image"` (Kadinsky 2.1)`
-            self.add_embedding = TextImageTimeEmbedding(
-                text_embed_dim=cross_attention_dim, image_embed_dim=cross_attention_dim, time_embed_dim=time_embed_dim
-            )
-        elif addition_embed_type == "text_time":
-            self.add_time_proj = Timesteps(addition_time_embed_dim, flip_sin_to_cos, freq_shift)
-            self.add_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
-
-        elif addition_embed_type is not None:
-            raise ValueError(f"addition_embed_type: {addition_embed_type} must be None, 'text' or 'text_image'.")
 
         # control net conditioning embedding
+        # the config should be correct as it's pulled from huggingface 
+        # still TODO: Check values.
+
         self.controlnet_cond_embedding = ControlNetConditioningEmbedding(
-            conditioning_embedding_channels=block_out_channels[0],
+            conditioning_embedding_channels= config.block_out_channels[0], 
             block_out_channels=conditioning_embedding_out_channels,
             conditioning_channels=conditioning_channels,
         )
 
-        self.down_blocks = nn.ModuleList([])
-        self.controlnet_down_blocks = nn.ModuleList([])
-
+        # TODO: take a look the attention part
         if isinstance(only_cross_attention, bool):
             only_cross_attention = [only_cross_attention] * len(down_block_types)
 
@@ -303,87 +226,77 @@ class ControlNetModel(nn.Module):
             num_attention_heads = (num_attention_heads,) * len(down_block_types)
 
         # down
-        output_channel = block_out_channels[0]
+
+        self.down_blocks = nn.ModuleList([])
+        self.controlnet_down_blocks = nn.ModuleList([])
+
+        output_channel = config.block_out_channels[0]
 
         controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
         controlnet_block = zero_module(controlnet_block)
         self.controlnet_down_blocks.append(controlnet_block)
 
-        for i, down_block_type in enumerate(down_block_types):
-            input_channel = output_channel
-            output_channel = block_out_channels[i]
-            is_final_block = i == len(block_out_channels) - 1
-
-            # hb: This is not abstracted in unet properly like it's in Diffusers
-            down_block = get_down_block( 
-                down_block_type,
-                num_layers=layers_per_block,
-                transformer_layers_per_block=transformer_layers_per_block[i],
-                in_channels=input_channel,
-                out_channels=output_channel,
-                temb_channels=time_embed_dim,
-                add_downsample=not is_final_block,
-                resnet_eps=norm_eps,
-                resnet_act_fn=act_fn,
-                resnet_groups=norm_num_groups,
-                cross_attention_dim=cross_attention_dim,
-                num_attention_heads=num_attention_heads[i],
-                attention_head_dim=attention_head_dim[i] if attention_head_dim[i] is not None else output_channel,
-                downsample_padding=downsample_padding,
-                use_linear_projection=use_linear_projection,
-                only_cross_attention=only_cross_attention[i],
-                upcast_attention=upcast_attention,
-                resnet_time_scale_shift=resnet_time_scale_shift,
+        block_channels = [config.block_out_channels[0]] + list(
+            config.block_out_channels
+        )
+        for i, (in_channels, out_channels) in enumerate(
+                zip(block_channels, block_channels[1:])
+            ):
+            down_block = UNetBlock2D(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                temb_channels=config.block_out_channels[0] * 4,
+                num_layers=config.layers_per_block[i],
+                transformer_layers_per_block=config.transformer_layers_per_block[i],
+                num_attention_heads=config.num_attention_heads[i],
+                cross_attention_dim=config.cross_attention_dim[i],
+                resnet_groups=config.norm_num_groups,
+                add_downsample=(i < len(config.block_out_channels) - 1),
+                add_upsample=False,
+                add_cross_attention=(i < len(config.block_out_channels) - 1),
             )
+
             self.down_blocks.append(down_block)
 
-            for _ in range(layers_per_block):
+            for _ in range(config.layers_per_block[i]):
                 controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
                 controlnet_block = zero_module(controlnet_block)
                 self.controlnet_down_blocks.append(controlnet_block)
 
-            if not is_final_block:
+            if not (i < len(config.block_out_channels ) -1):
                 controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
                 controlnet_block = zero_module(controlnet_block)
                 self.controlnet_down_blocks.append(controlnet_block)
 
         # mid
-        mid_block_channel = block_out_channels[-1]
+        mid_block_channel = config.block_out_channels[-1]
 
         controlnet_block = nn.Conv2d(mid_block_channel, mid_block_channel, kernel_size=1)
         controlnet_block = zero_module(controlnet_block)
         self.controlnet_mid_block = controlnet_block
 
-        if mid_block_type == "UNetMidBlock2DCrossAttn":
-            self.mid_block = UNetMidBlock2DCrossAttn(
-                transformer_layers_per_block=transformer_layers_per_block[-1],
-                in_channels=mid_block_channel,
-                temb_channels=time_embed_dim,
-                resnet_eps=norm_eps,
-                resnet_act_fn=act_fn,
-                output_scale_factor=mid_block_scale_factor,
-                resnet_time_scale_shift=resnet_time_scale_shift,
-                cross_attention_dim=cross_attention_dim,
-                num_attention_heads=num_attention_heads[-1],
-                resnet_groups=norm_num_groups,
-                use_linear_projection=use_linear_projection,
-                upcast_attention=upcast_attention,
-            )
-        elif mid_block_type == "UNetMidBlock2D":
-            self.mid_block = UNetMidBlock2D(
-                in_channels=block_out_channels[-1],
-                temb_channels=time_embed_dim,
-                num_layers=0,
-                resnet_eps=norm_eps,
-                resnet_act_fn=act_fn,
-                output_scale_factor=mid_block_scale_factor,
-                resnet_groups=norm_num_groups,
-                resnet_time_scale_shift=resnet_time_scale_shift,
-                add_attention=False,
-            )
-        else:
-            raise ValueError(f"unknown mid_block_type : {mid_block_type}")
-
+        self.mid_blocks = [
+            ResnetBlock2D(
+                in_channels=config.block_out_channels[-1],
+                out_channels=config.block_out_channels[-1],
+                temb_channels=config.block_out_channels[0] * 4,
+                groups=config.norm_num_groups,
+            ),
+            Transformer2D(
+                in_channels=config.block_out_channels[-1],
+                model_dims=config.block_out_channels[-1],
+                num_heads=config.num_attention_heads[-1],
+                num_layers=config.transformer_layers_per_block[-1],
+                encoder_dims=config.cross_attention_dim[-1],
+            ),
+            ResnetBlock2D(
+                in_channels=config.block_out_channels[-1],
+                out_channels=config.block_out_channels[-1],
+                temb_channels=config.block_out_channels[0] * 4,
+                groups=config.norm_num_groups,
+            ),
+        ]
+        
     @classmethod
     def from_unet(
         cls,
@@ -393,6 +306,7 @@ class ControlNetModel(nn.Module):
         load_weights_from_unet: bool = True,
         conditioning_channels: int = 3,
     ):
+        ## TODO: modify this to load from the new unet2D class wihtout conditioning  
         r"""
         Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
 
@@ -456,154 +370,6 @@ class ControlNetModel(nn.Module):
 
         return controlnet
 
-    @property
-    # Copied from diffusers.models.unet_2d_condition.UNet2DConditionModel.attn_processors
-    def attn_processors(self) -> Dict[str, AttentionProcessor]:
-        r"""
-        Returns:
-            `dict` of attention processors: A dictionary containing all attention processors used in the model with
-            indexed by its weight name.
-        """
-        # set recursively
-        processors = {}
-
-        def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors: Dict[str, AttentionProcessor]):
-            if hasattr(module, "get_processor"):
-                processors[f"{name}.processor"] = module.get_processor(return_deprecated_lora=True)
-
-            for sub_name, child in module.named_children():
-                fn_recursive_add_processors(f"{name}.{sub_name}", child, processors)
-
-            return processors
-
-        for name, module in self.named_children():
-            fn_recursive_add_processors(name, module, processors)
-
-        return processors
-
-    # Copied from diffusers.models.unet_2d_condition.UNet2DConditionModel.set_attn_processor
-    def set_attn_processor(
-        self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]], _remove_lora=False
-    ):
-        r"""
-        Sets the attention processor to use to compute attention.
-
-        Parameters:
-            processor (`dict` of `AttentionProcessor` or only `AttentionProcessor`):
-                The instantiated processor class or a dictionary of processor classes that will be set as the processor
-                for **all** `Attention` layers.
-
-                If `processor` is a dict, the key needs to define the path to the corresponding cross attention
-                processor. This is strongly recommended when setting trainable attention processors.
-
-        """
-        count = len(self.attn_processors.keys())
-
-        if isinstance(processor, dict) and len(processor) != count:
-            raise ValueError(
-                f"A dict of processors was passed, but the number of processors {len(processor)} does not match the"
-                f" number of attention layers: {count}. Please make sure to pass {count} processor classes."
-            )
-
-        def fn_recursive_attn_processor(name: str, module: torch.nn.Module, processor):
-            if hasattr(module, "set_processor"):
-                if not isinstance(processor, dict):
-                    module.set_processor(processor, _remove_lora=_remove_lora)
-                else:
-                    module.set_processor(processor.pop(f"{name}.processor"), _remove_lora=_remove_lora)
-
-            for sub_name, child in module.named_children():
-                fn_recursive_attn_processor(f"{name}.{sub_name}", child, processor)
-
-        for name, module in self.named_children():
-            fn_recursive_attn_processor(name, module, processor)
-
-    # Copied from diffusers.models.unet_2d_condition.UNet2DConditionModel.set_default_attn_processor
-    def set_default_attn_processor(self):
-        """
-        Disables custom attention processors and sets the default attention implementation.
-        """
-        if all(proc.__class__ in ADDED_KV_ATTENTION_PROCESSORS for proc in self.attn_processors.values()):
-            processor = AttnAddedKVProcessor()
-        elif all(proc.__class__ in CROSS_ATTENTION_PROCESSORS for proc in self.attn_processors.values()):
-            processor = AttnProcessor()
-        else:
-            raise ValueError(
-                f"Cannot call `set_default_attn_processor` when attention processors are of type {next(iter(self.attn_processors.values()))}"
-            )
-
-        self.set_attn_processor(processor, _remove_lora=True)
-
-    # Copied from diffusers.models.unet_2d_condition.UNet2DConditionModel.set_attention_slice
-    def set_attention_slice(self, slice_size: Union[str, int, List[int]]) -> None:
-        r"""
-        Enable sliced attention computation.
-
-        When this option is enabled, the attention module splits the input tensor in slices to compute attention in
-        several steps. This is useful for saving some memory in exchange for a small decrease in speed.
-
-        Args:
-            slice_size (`str` or `int` or `list(int)`, *optional*, defaults to `"auto"`):
-                When `"auto"`, input to the attention heads is halved, so attention is computed in two steps. If
-                `"max"`, maximum amount of memory is saved by running only one slice at a time. If a number is
-                provided, uses as many slices as `attention_head_dim // slice_size`. In this case, `attention_head_dim`
-                must be a multiple of `slice_size`.
-        """
-        sliceable_head_dims = []
-
-        def fn_recursive_retrieve_sliceable_dims(module: torch.nn.Module):
-            if hasattr(module, "set_attention_slice"):
-                sliceable_head_dims.append(module.sliceable_head_dim)
-
-            for child in module.children():
-                fn_recursive_retrieve_sliceable_dims(child)
-
-        # retrieve number of attention layers
-        for module in self.children():
-            fn_recursive_retrieve_sliceable_dims(module)
-
-        num_sliceable_layers = len(sliceable_head_dims)
-
-        if slice_size == "auto":
-            # half the attention head size is usually a good trade-off between
-            # speed and memory
-            slice_size = [dim // 2 for dim in sliceable_head_dims]
-        elif slice_size == "max":
-            # make smallest slice possible
-            slice_size = num_sliceable_layers * [1]
-
-        slice_size = num_sliceable_layers * [slice_size] if not isinstance(slice_size, list) else slice_size
-
-        if len(slice_size) != len(sliceable_head_dims):
-            raise ValueError(
-                f"You have provided {len(slice_size)}, but {self.config} has {len(sliceable_head_dims)} different"
-                f" attention layers. Make sure to match `len(slice_size)` to be {len(sliceable_head_dims)}."
-            )
-
-        for i in range(len(slice_size)):
-            size = slice_size[i]
-            dim = sliceable_head_dims[i]
-            if size is not None and size > dim:
-                raise ValueError(f"size {size} has to be smaller or equal to {dim}.")
-
-        # Recursively walk through all the children.
-        # Any children which exposes the set_attention_slice method
-        # gets the message
-        def fn_recursive_set_attention_slice(module: torch.nn.Module, slice_size: List[int]):
-            if hasattr(module, "set_attention_slice"):
-                module.set_attention_slice(slice_size.pop())
-
-            for child in module.children():
-                fn_recursive_set_attention_slice(child, slice_size)
-
-        reversed_slice_size = list(reversed(slice_size))
-        for module in self.children():
-            fn_recursive_set_attention_slice(module, reversed_slice_size)
-
-    def _set_gradient_checkpointing(self, module, value: bool = False) -> None:
-        if isinstance(module, (CrossAttnDownBlock2D, DownBlock2D)):
-            module.gradient_checkpointing = value
-
     def forward(
         self,
         sample: torch.FloatTensor,
@@ -660,11 +426,8 @@ class ControlNetModel(nn.Module):
         """
 
 
-        # prepare attention_mask
-        if attention_mask is not None:
-            attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
-            attention_mask = attention_mask.unsqueeze(1)
-
+        # prepare attention_mask\
+        
         # 1. time
         timesteps = timestep
         if not torch.is_tensor(timesteps):

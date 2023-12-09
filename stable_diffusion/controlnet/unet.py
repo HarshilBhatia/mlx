@@ -1,5 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
+# they implement only unet and use it in SD, 
+# they don't use ConditionalUnet. Hmm, will CN work with standard Unet? 
 import math
 from typing import Optional
 
