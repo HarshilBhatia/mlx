@@ -18,11 +18,11 @@ from .vae import Autoencoder
 from .controlnet import ControlNetModel
 import pdb
 
-_DEFAULT_MODEL = "stabilityai/stable-diffusion-2-1-base"
+_DEFAULT_MODEL = "runwayml/stable-diffusion-v1-5"
 _DEFAULT_CN_MODEL = "lllyasviel/sd-controlnet-canny"
 _MODELS = {
-    # See https://huggingface.co/stabilityai/stable-diffusion-2-1-base for the model details and license
-    "stabilityai/stable-diffusion-2-1-base": {
+    # See https://huggingface.co/runwayml/stable-diffusion-v1-5 for the model details and license
+    "runwayml/stable-diffusion-v1-5": {
         "unet_config": "unet/config.json",
         "unet": "unet/diffusion_pytorch_model.safetensors",
         "text_encoder_config": "text_encoder/config.json",
@@ -42,6 +42,9 @@ def _from_numpy(x):
 
 def map_unet_weights(key, value):
     # Map up/downsampling
+    if "conv" not in key:
+        value = value.squeeze()
+
     if "downsamplers" in key:
         key = key.replace("downsamplers.0.conv", "downsample")
     if "upsamplers" in key:
@@ -152,8 +155,17 @@ def map_vae_weights(key, value):
     return [(key, _from_numpy(value))]
 
 def map_cn_weights(key, value):
+
+
+    # if "controlnet_down_blocks" in key:
+    #     breakpoint()
+
+    if "conv" not in key and "controlnet" not in key:
+        value = value.squeeze()
+
     if "to_k" in key:
         key = key.replace("to_k", "key_proj")
+
     if "to_out.0" in key:
         key = key.replace("to_out.0", "out_proj")
     if "to_q" in key:
@@ -178,6 +190,14 @@ def map_cn_weights(key, value):
 
         return [(k1, _from_numpy(v1)), (k2, _from_numpy(v2))]
 
+    if "conv_shortcut.weight" in key:
+        value = value.squeeze() 
+
+    if len(value.shape) == 4:
+        value = value.transpose(0, 2, 3, 1)
+
+
+
     return [(key, _from_numpy(value))]
 
 def _flatten(params):
@@ -188,7 +208,6 @@ def _load_safetensor_weights(mapper, model, weight_file, float16: bool = True):
     dtype = np.float16 if float16 else np.float32
     with safetensor_open(weight_file, framework="numpy") as f:
         weights = _flatten([mapper(k, f.get_tensor(k).astype(dtype)) for k in f.keys()])
-    
     model.update(tree_unflatten(weights))
 
 
@@ -234,7 +253,6 @@ def load_controlnet( unet_config: UNetConfig, key: str =_DEFAULT_CN_MODEL):
 
     with open(hf_hub_download(key, "config.json")) as f:
         config = json.load(f)
-    print(config)
 
     n_blocks = len(config["block_out_channels"])
 
@@ -252,9 +270,8 @@ def load_controlnet( unet_config: UNetConfig, key: str =_DEFAULT_CN_MODEL):
     model = ControlNetModel(controlnet_config, unet_config)
     weight_file = hf_hub_download(key, "diffusion_pytorch_model.safetensors")
     # mx.eval(model.parameters())
-    breakpoint()
+
     _load_safetensor_weights(map_cn_weights, model, weight_file)
-    breakpoint()
 
     return model 
 

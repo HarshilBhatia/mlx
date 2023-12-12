@@ -67,6 +67,7 @@ class TransformerBlock(nn.Module):
 
         # Cross attention
         y = self.norm2(x)
+
         y = self.attn2(y, memory, memory, memory_mask)
         x = x + y
 
@@ -244,6 +245,7 @@ class UNetBlock2D(nn.Module):
 
         for i in range(len(self.resnets)):
             if residual_hidden_states is not None:
+                breakpoint()
                 x = mx.concatenate([x, residual_hidden_states.pop()], axis=-1)
 
             x = self.resnets[i](x, temb)
@@ -269,6 +271,11 @@ class UNetModel(nn.Module):
 
     def __init__(self, config: UNetConfig):
         super().__init__()
+
+        print(config.in_channels, 
+            config.block_out_channels[0],
+            config.conv_in_kernel,
+            (config.conv_in_kernel - 1) // 2)
 
         self.conv_in = nn.Conv2d(
             config.in_channels,
@@ -392,6 +399,7 @@ class UNetModel(nn.Module):
         # Run the downsampling part of the unet
         residuals = [x]
         for block in self.down_blocks:
+            print(x.shape)
             x, res = block(
                 x,
                 encoder_x=encoder_x,
@@ -406,6 +414,7 @@ class UNetModel(nn.Module):
         x = self.mid_blocks[1](x, encoder_x, attn_mask, encoder_attn_mask)
         x = self.mid_blocks[2](x, temb)
 
+        breakpoint()
         # Run the upsampling part of the unet
         for block in self.up_blocks:
             x, _ = block(

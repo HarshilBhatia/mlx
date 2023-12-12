@@ -69,6 +69,7 @@ class TransformerBlock(nn.Module):
 
         # Cross attention
         y = self.norm2(x)
+
         y = self.attn2(y, memory, memory, memory_mask)
         x = x + y
 
@@ -111,13 +112,18 @@ class Transformer2D(nn.Module):
 
         # Perform the input norm and projection
         B, H, W, C = x.shape
+        breakpoint() # hb: so the following line of groupnorm is broken and gives NaN values
+        # to fix this look into the latent generation or weights of the groupNorm! -> if nothing working
+        # then go to the diffusers implementation
         x = self.norm(x).reshape(B, -1, C)
         x = self.proj_in(x)
-
+        breakpoint()
+    
         # Apply the transformer
         for block in self.transformer_blocks:
             x = block(x, encoder_x, attn_mask, encoder_attn_mask)
 
+        breakpoint()
         # Apply the output projection and reshape
         x = self.proj_out(x)
         x = x.reshape(B, H, W, C)
@@ -246,18 +252,25 @@ class UNetBlock2D(nn.Module):
 
         for i in range(len(self.resnets)):
             if residual_hidden_states is not None:
+                breakpoint()
                 x = mx.concatenate([x, residual_hidden_states.pop()], axis=-1)
 
             x = self.resnets[i](x, temb)
-
+            x = x.astype(mx.float16)
+            encoder_x = encoder_x.astype(mx.float16)
+            breakpoint()
             if "attentions" in self:
                 x = self.attentions[i](x, encoder_x, attn_mask, encoder_attn_mask)
 
+            print('poerw',x)
             output_states.append(x)
 
         if "downsample" in self:
             x = self.downsample(x)
             output_states.append(x)
+            print('123',x)
+        
+        breakpoint()
 
         if "upsample" in self:
             x = self.upsample(upsample_nearest(x))
@@ -272,7 +285,6 @@ class UNetModel(nn.Module):
     def __init__(self, config: UNetConfig):
         super().__init__()
 
-        print(config.num_attention_heads)
         self.conv_in = nn.Conv2d(
             config.in_channels,
             config.block_out_channels[0],
@@ -299,6 +311,7 @@ class UNetModel(nn.Module):
         block_channels = [config.block_out_channels[0]] + list(
             config.block_out_channels
         )
+
         self.down_blocks = [
             UNetBlock2D(
                 in_channels=in_channels,
@@ -306,7 +319,7 @@ class UNetModel(nn.Module):
                 temb_channels=config.block_out_channels[0] * 4,
                 num_layers=config.layers_per_block[i],
                 transformer_layers_per_block=config.transformer_layers_per_block[i],
-                num_attention_heads=config.num_attention_heads[i],
+                num_attention_heads=config.num_attention_heads,
                 cross_attention_dim=config.cross_attention_dim[i],
                 resnet_groups=config.norm_num_groups,
                 add_downsample=(i < len(config.block_out_channels) - 1),
@@ -329,7 +342,7 @@ class UNetModel(nn.Module):
             Transformer2D(
                 in_channels=config.block_out_channels[-1],
                 model_dims=config.block_out_channels[-1],
-                num_heads=config.num_attention_heads[-1],
+                num_heads=config.num_attention_heads,
                 num_layers=config.transformer_layers_per_block[-1],
                 encoder_dims=config.cross_attention_dim[-1],
             ),
@@ -355,7 +368,7 @@ class UNetModel(nn.Module):
                 prev_out_channels=prev_out_channels,
                 num_layers=config.layers_per_block[i] + 1,
                 transformer_layers_per_block=config.transformer_layers_per_block[i],
-                num_attention_heads=config.num_attention_heads[i],
+                num_attention_heads=config.num_attention_heads,
                 cross_attention_dim=config.cross_attention_dim[i],
                 resnet_groups=config.norm_num_groups,
                 add_downsample=False,
@@ -383,7 +396,7 @@ class UNetModel(nn.Module):
             padding=(config.conv_out_kernel - 1) // 2,
         )
 
-    def __call__(self, x, timestep, encoder_x, attn_mask=None, encoder_attn_mask=None):
+    def __call__(self, x, timestep, encoder_x, cn_down_residuals, cn_mid_residuals, attn_mask=None, encoder_attn_mask=None):
 
         # Compute the time embeddings
         temb = self.timesteps(timestep).astype(x.dtype)
@@ -391,6 +404,7 @@ class UNetModel(nn.Module):
 
         # Preprocess the input
         x = self.conv_in(x)
+
 
         # Run the downsampling part of the unet
         residuals = [x]
@@ -403,12 +417,26 @@ class UNetModel(nn.Module):
                 encoder_attn_mask=encoder_attn_mask,
             )
             residuals.extend(res)
+        breakpoint()
+        new_residuals = []
 
+        for res, cn_down_residual in zip(
+            residuals, cn_down_residuals
+        ):
+            res = res + cn_down_residual
+            new_residuals.extend(res)
+
+        breakpoint()
+        residuals = new_residuals
+        
         # Run the middle part of the unet
         x = self.mid_blocks[0](x, temb)
         x = self.mid_blocks[1](x, encoder_x, attn_mask, encoder_attn_mask)
         x = self.mid_blocks[2](x, temb)
 
+        # print(x)
+        breakpoint()
+        x = x + cn_mid_residuals
         # Run the upsampling part of the unet
         for block in self.up_blocks:
             x, _ = block(

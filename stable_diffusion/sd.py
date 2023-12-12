@@ -6,8 +6,8 @@ from tqdm import tqdm
 
 import mlx.core as mx
 
-# from stable_diffusion import StableDiffusion
-from controlnet import ControlNetStableDiffusionPipeline as StableDiffusion
+from stable_diffusion import StableDiffusion
+# from controlnet import ControlNetStableDiffusionPipeline as StableDiffusion
 
 
 if __name__ == "__main__":
@@ -16,7 +16,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("prompt")
     parser.add_argument("--n_images", type=int, default=1)
-    parser.add_argument("--steps", type=int, default=1)
+    parser.add_argument("--steps", type=int, default=3)
     parser.add_argument("--cfg", type=float, default=7.5)
     parser.add_argument("--negative_prompt", default="")
     parser.add_argument("--n_rows", type=int, default=1)
