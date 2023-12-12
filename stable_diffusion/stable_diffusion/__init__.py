@@ -24,7 +24,7 @@ def _repeat(x, n, axis):
     x = mx.broadcast_to(mx.expand_dims(x, axis + 1), s)
 
     # Make the flattened shape
-    s.pop(axis + 1)``
+    s.pop(axis + 1)
     s[axis] *= n
 
     return x.reshape(s)
@@ -33,6 +33,7 @@ def _repeat(x, n, axis):
 class StableDiffusion:
     def __init__(self, model: str = _DEFAULT_MODEL, float16: bool = True):
         self.dtype = mx.float16 if float16 else mx.float32
+        print(self.dtype)
         self.diffusion_config = load_diffusion_config(model)
         self.unet = load_unet(model, float16)
         self.text_encoder = load_text_encoder(model, float16)

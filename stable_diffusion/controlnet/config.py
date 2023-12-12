@@ -46,3 +46,19 @@ class DiffusionConfig:
     beta_start: float = 0.00085
     beta_end: float = 0.012
     num_train_steps: int = 1000
+
+@dataclass
+class ControlNetConfig:
+    in_channels: int = 4
+    out_channels: int = 4
+    conv_in_kernel: int = 3
+    conv_out_kernel: int = 3
+    block_out_channels: Tuple[int] = (320, 640, 1280, 1280)
+    layers_per_block: Tuple[int] = (2, 2, 2, 2)
+    mid_block_layers: int = 2
+    transformer_layers_per_block: Tuple[int] = (1, 1, 1, 1)
+    num_attention_heads: Tuple[int] = (5, 10, 20, 20)
+    cross_attention_dim: Tuple[int] = (1024,) * 4
+    conditioning_embedding_out_channels: Tuple[int] =  (16, 32, 96, 256)
+    norm_num_groups: int = 32
+    conditioning_channels: int = 3 

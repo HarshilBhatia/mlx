@@ -11,13 +11,15 @@ import mlx.core as mx
 from mlx.utils import tree_unflatten
 
 from .clip import CLIPTextModel
-from .config import UNetConfig, CLIPTextModelConfig, AutoencoderConfig, DiffusionConfig
+from .config import UNetConfig, CLIPTextModelConfig, AutoencoderConfig, DiffusionConfig, ControlNetConfig
 from .tokenizer import Tokenizer
 from .unet import UNetModel
 from .vae import Autoencoder
-
+from .controlnet import ControlNetModel
+import pdb
 
 _DEFAULT_MODEL = "stabilityai/stable-diffusion-2-1-base"
+_DEFAULT_CN_MODEL = "lllyasviel/sd-controlnet-canny"
 _MODELS = {
     # See https://huggingface.co/stabilityai/stable-diffusion-2-1-base for the model details and license
     "stabilityai/stable-diffusion-2-1-base": {
@@ -154,10 +156,11 @@ def _flatten(params):
     return [(k, v) for p in params for (k, v) in p]
 
 
-def _load_safetensor_weights(mapper, model, weight_file, float16: bool = False):
+def _load_safetensor_weights(mapper, model, weight_file, float16: bool = True):
     dtype = np.float16 if float16 else np.float32
     with safetensor_open(weight_file, framework="numpy") as f:
         weights = _flatten([mapper(k, f.get_tensor(k).astype(dtype)) for k in f.keys()])
+    
     model.update(tree_unflatten(weights))
 
 
@@ -178,8 +181,7 @@ def load_unet(key: str = _DEFAULT_MODEL, float16: bool = False):
         config = json.load(f)
 
     n_blocks = len(config["block_out_channels"])
-    model = UNetModel(
-        UNetConfig(
+    unet_config = UNetConfig(
             in_channels=config["in_channels"],
             out_channels=config["out_channels"],
             block_out_channels=config["block_out_channels"],
@@ -188,15 +190,45 @@ def load_unet(key: str = _DEFAULT_MODEL, float16: bool = False):
             cross_attention_dim=[config["cross_attention_dim"]] * n_blocks,
             norm_num_groups=config["norm_num_groups"],
         )
-    )
+
+    model = UNetModel(unet_config)
 
     # Download the weights and map them into the model
     unet_weights = _MODELS[key]["unet"]
     weight_file = hf_hub_download(key, unet_weights)
     _load_safetensor_weights(map_unet_weights, model, weight_file, float16)
 
-    return model
+    # with safetensor_open(weight_file, framework="numpy") as f:
+        # print(f.keys())
+    return model, unet_config
 
+def load_controlnet( unet_config: UNetConfig, key: str =_DEFAULT_CN_MODEL):
+
+    with open(hf_hub_download(key, "config.json")) as f:
+        config = json.load(f)
+    print(config)
+
+    n_blocks = len(config["block_out_channels"])
+
+    controlnet_config = ControlNetConfig(
+            in_channels=config["in_channels"],
+            # out_channels= config["out_channels"],/
+            block_out_channels=config["block_out_channels"],
+            layers_per_block=[config["layers_per_block"]] * n_blocks,
+            num_attention_heads=config["attention_head_dim"],
+            cross_attention_dim=[config["cross_attention_dim"]] * n_blocks,
+            norm_num_groups=config["norm_num_groups"],
+            conditioning_embedding_out_channels = config["conditioning_embedding_out_channels"]
+        )
+
+    model = ControlNetModel(controlnet_config, unet_config)
+    weight_file = hf_hub_download(key, "diffusion_pytorch_model.safetensors")
+    # mx.eval(model.parameters())
+    breakpoint()
+    print(model.parameters())
+    _load_safetensor_weights(map_unet_weights, model, weight_file)
+
+    return model 
 
 def load_text_encoder(key: str = _DEFAULT_MODEL, float16: bool = False):
     """Load the stable diffusion text encoder from Huggingface Hub."""
@@ -268,7 +300,6 @@ def load_diffusion_config(key: str = _DEFAULT_MODEL):
         beta_schedule=config["beta_schedule"],
         num_train_steps=config["num_train_timesteps"],
     )
-
 
 def load_tokenizer(key: str = _DEFAULT_MODEL):
     _check_key(key, "load_tokenizer")

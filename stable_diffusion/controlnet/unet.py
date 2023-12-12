@@ -272,6 +272,7 @@ class UNetModel(nn.Module):
     def __init__(self, config: UNetConfig):
         super().__init__()
 
+        print(config.num_attention_heads)
         self.conv_in = nn.Conv2d(
             config.in_channels,
             config.block_out_channels[0],

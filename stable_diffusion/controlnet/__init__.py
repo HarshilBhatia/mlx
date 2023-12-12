@@ -11,6 +11,7 @@ from .model_io import (
     load_autoencoder,
     load_diffusion_config,
     load_tokenizer,
+    load_controlnet,
     _DEFAULT_MODEL,
 )
 from .sampler import SimpleEulerSampler
@@ -31,15 +32,16 @@ def _repeat(x, n, axis):
     return x.reshape(s)
 
 
-class StableDiffusion:
+class ControlNetStableDiffusionPipeline:
     def __init__(self, model: str = _DEFAULT_MODEL, float16: bool = True):
         self.dtype = mx.float16 if float16 else mx.float32
         self.diffusion_config = load_diffusion_config(model)
-        self.unet = load_unet(model, float16)
+        self.unet, unet_config = load_unet(model, float16) # returns the unet config
         self.text_encoder = load_text_encoder(model, float16)
         self.autoencoder = load_autoencoder(model, float16)
         self.sampler = SimpleEulerSampler(self.diffusion_config)
         self.tokenizer = load_tokenizer(model)
+        self.controlnet = load_controlnet(unet_config = unet_config)
 
     def generate_latents(
         self,

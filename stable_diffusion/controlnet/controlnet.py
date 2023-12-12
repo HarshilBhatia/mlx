@@ -4,12 +4,14 @@ from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from unet import TimestepEmbedding, TransformerBlock, Transformer2D, ResnetBlock2D, UNetBlock2D 
+from .unet import TimestepEmbedding, TransformerBlock, Transformer2D, ResnetBlock2D, UNetBlock2D 
+from typing import Optional, Tuple, Union
+from .config import ControlNetConfig,UNetConfig
 
 def zero_module(module):
     #  TODO: check why this is used.  
-    for p in module.parameters():
-        nn.init.zeros_(p)
+    # for p in module.parameters():
+    #     nn.init.zeros_(p)
     return module
 
 class ControlNetConditioningEmbedding(nn.Module):
@@ -27,7 +29,7 @@ class ControlNetConditioningEmbedding(nn.Module):
 
         self.conv_in = nn.Conv2d(conditioning_channels, block_out_channels[0], kernel_size=3, padding=1)
 
-        self.blocks = nn.ModuleList([])
+        self.blocks = []
 
         for i in range(len(block_out_channels) - 1):
             channel_in = block_out_channels[i]
@@ -52,7 +54,7 @@ class ControlNetConditioningEmbedding(nn.Module):
         return embedding
 
 class ControlNetModel(nn.Module):
-"""
+    """
     A ControlNet model.
 
     Args:
@@ -123,49 +125,13 @@ class ControlNetModel(nn.Module):
 
     def __init__(
         self,
-        config, # unet config 
-        in_channels: int = 4,
-        conditioning_channels: int = 3,
-        flip_sin_to_cos: bool = True,
-        freq_shift: int = 0,
-        down_block_types: Tuple[str, ...] = (
-            "CrossAttnDownBlock2D",
-            "CrossAttnDownBlock2D",
-            "CrossAttnDownBlock2D",
-            "DownBlock2D",
-        ),
-        mid_block_type: Optional[str] = "UNetMidBlock2DCrossAttn",
-        only_cross_attention: Union[bool, Tuple[bool]] = False,
-        block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
-        layers_per_block: int = 2,
-        downsample_padding: int = 1,
-        mid_block_scale_factor: float = 1,
-        act_fn: str = "silu",
-        norm_num_groups: Optional[int] = 32,
-        norm_eps: float = 1e-5,
-        cross_attention_dim: int = 1280,
-        transformer_layers_per_block: Union[int, Tuple[int, ...]] = 1,
-        encoder_hid_dim: Optional[int] = None,
-        encoder_hid_dim_type: Optional[str] = None,
-        attention_head_dim: Union[int, Tuple[int, ...]] = 8,
-        num_attention_heads: Optional[Union[int, Tuple[int, ...]]] = None,
-        use_linear_projection: bool = False,
-        class_embed_type: Optional[str] = None,
-        addition_embed_type: Optional[str] = None, 
-        addition_time_embed_dim: Optional[int] = None,
-        num_class_embeds: Optional[int] = None,
-        upcast_attention: bool = False,
-        resnet_time_scale_shift: str = "default",
-        projection_class_embeddings_input_dim: Optional[int] = None,
-        conditioning_embedding_out_channels: Optional[Tuple[int, ...]] = (16, 32, 96, 256),
-        global_pool_conditions: bool = False,
-        addition_embed_type_num_heads: int = 64,
+        config : ControlNetConfig, 
+        unet_config: UNetConfig# unet config 
     ): # TODO adjust arguments 
 
         super().__init__()
         """
-        Need to pass some kind of config here for unet
-
+        TODO: Migrate to a singular config. 
         """
         # Status: Done. 
         # Small TODOs are left and __init__ args is left
@@ -175,24 +141,23 @@ class ControlNetModel(nn.Module):
         # encoder_hid_proj
         # addition_embed_type 
 
-        num_attention_heads = num_attention_heads or attention_head_dim
-
+        # num_attention_heads = config.num_attention_heads 
         # hb: we have config.block_out_channels instead
 
         # input
         self.conv_in = nn.Conv2d(
-            config.in_channels,
-            config.block_out_channels[0],
-            config.conv_in_kernel,
-            padding=(config.conv_in_kernel - 1) // 2,
+            unet_config.in_channels,
+            unet_config.block_out_channels[0],
+            unet_config.conv_in_kernel,
+            padding=(unet_config.conv_in_kernel - 1) // 2,
         )
         
         # time 
         self.timesteps = nn.SinusoidalPositionalEncoding(
-            config.block_out_channels[0],
+            unet_config.block_out_channels[0],
             max_freq=1,
             min_freq=math.exp(
-                -math.log(10000) + 2 * math.log(10000) / config.block_out_channels[0]
+                -math.log(10000) + 2 * math.log(10000) / unet_config.block_out_channels[0]
             ),
             scale=1.0,
             cos_first=True,
@@ -201,43 +166,43 @@ class ControlNetModel(nn.Module):
 
         # time embedding
         self.time_embedding = TimestepEmbedding(
-            config.block_out_channels[0],
-            config.block_out_channels[0] * 4,
+            unet_config.block_out_channels[0],
+            unet_config.block_out_channels[0] * 4,
         )
 
         # control net conditioning embedding
-        # the config should be correct as it's pulled from huggingface 
+        # the unet_config should be correct as it's pulled from huggingface 
         # still TODO: Check values.
 
         self.controlnet_cond_embedding = ControlNetConditioningEmbedding(
             conditioning_embedding_channels= config.block_out_channels[0], 
-            block_out_channels=conditioning_embedding_out_channels,
-            conditioning_channels=conditioning_channels,
+            block_out_channels=config.conditioning_embedding_out_channels,
+            conditioning_channels= config.conditioning_channels,
         )
 
         # TODO: take a look the attention part
-        if isinstance(only_cross_attention, bool):
-            only_cross_attention = [only_cross_attention] * len(down_block_types)
+        # if isinstance(only_cross_attention, bool):
+        #     only_cross_attention = [only_cross_attention] * len(down_block_types)
 
-        if isinstance(attention_head_dim, int):
-            attention_head_dim = (attention_head_dim,) * len(down_block_types)
+        # if isinstance(attention_head_dim, int):
+        #     attention_head_dim = (attention_head_dim,) * len(down_block_types)
 
-        if isinstance(num_attention_heads, int):
-            num_attention_heads = (num_attention_heads,) * len(down_block_types)
+        # if isinstance(num_attention_heads, int):
+        #     num_attention_heads = (num_attention_heads,) * len(down_block_types)
 
         # down
 
-        self.down_blocks = nn.ModuleList([])
-        self.controlnet_down_blocks = nn.ModuleList([])
+        self.down_blocks = []
+        self.controlnet_down_blocks = []
 
-        output_channel = config.block_out_channels[0]
+        output_channel = unet_config.block_out_channels[0]
 
         controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
         controlnet_block = zero_module(controlnet_block)
         self.controlnet_down_blocks.append(controlnet_block)
 
-        block_channels = [config.block_out_channels[0]] + list(
-            config.block_out_channels
+        block_channels = [unet_config.block_out_channels[0]] + list(
+            unet_config.block_out_channels
         )
         for i, (in_channels, out_channels) in enumerate(
                 zip(block_channels, block_channels[1:])
@@ -245,15 +210,15 @@ class ControlNetModel(nn.Module):
             down_block = UNetBlock2D(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                temb_channels=config.block_out_channels[0] * 4,
-                num_layers=config.layers_per_block[i],
-                transformer_layers_per_block=config.transformer_layers_per_block[i],
-                num_attention_heads=config.num_attention_heads[i],
-                cross_attention_dim=config.cross_attention_dim[i],
-                resnet_groups=config.norm_num_groups,
-                add_downsample=(i < len(config.block_out_channels) - 1),
+                temb_channels=unet_config.block_out_channels[0] * 4,
+                num_layers=unet_config.layers_per_block[i],
+                transformer_layers_per_block=unet_config.transformer_layers_per_block[i],
+                num_attention_heads=unet_config.num_attention_heads[i],
+                cross_attention_dim=unet_config.cross_attention_dim[i],
+                resnet_groups=unet_config.norm_num_groups,
+                add_downsample=(i < len(unet_config.block_out_channels) - 1),
                 add_upsample=False,
-                add_cross_attention=(i < len(config.block_out_channels) - 1),
+                add_cross_attention=(i < len(unet_config.block_out_channels) - 1),
             )
 
             self.down_blocks.append(down_block)
@@ -269,7 +234,7 @@ class ControlNetModel(nn.Module):
                 self.controlnet_down_blocks.append(controlnet_block)
 
         # mid
-        mid_block_channel = config.block_out_channels[-1]
+        mid_block_channel = unet_config.block_out_channels[-1]
 
         controlnet_block = nn.Conv2d(mid_block_channel, mid_block_channel, kernel_size=1)
         controlnet_block = zero_module(controlnet_block)
@@ -277,33 +242,32 @@ class ControlNetModel(nn.Module):
 
         self.mid_blocks = [
             ResnetBlock2D(
-                in_channels=config.block_out_channels[-1],
-                out_channels=config.block_out_channels[-1],
-                temb_channels=config.block_out_channels[0] * 4,
-                groups=config.norm_num_groups,
+                in_channels=unet_config.block_out_channels[-1],
+                out_channels=unet_config.block_out_channels[-1],
+                temb_channels=unet_config.block_out_channels[0] * 4,
+                groups=unet_config.norm_num_groups,
             ),
             Transformer2D(
-                in_channels=config.block_out_channels[-1],
-                model_dims=config.block_out_channels[-1],
-                num_heads=config.num_attention_heads[-1],
-                num_layers=config.transformer_layers_per_block[-1],
-                encoder_dims=config.cross_attention_dim[-1],
+                in_channels=unet_config.block_out_channels[-1],
+                model_dims=unet_config.block_out_channels[-1],
+                num_heads=unet_config.num_attention_heads[-1],
+                num_layers=unet_config.transformer_layers_per_block[-1],
+                encoder_dims=unet_config.cross_attention_dim[-1],
             ),
             ResnetBlock2D(
-                in_channels=config.block_out_channels[-1],
-                out_channels=config.block_out_channels[-1],
-                temb_channels=config.block_out_channels[0] * 4,
-                groups=config.norm_num_groups,
+                in_channels=unet_config.block_out_channels[-1],
+                out_channels=unet_config.block_out_channels[-1],
+                temb_channels=unet_config.block_out_channels[0] * 4,
+                groups=unet_config.norm_num_groups,
             ),
         ]
         
     @classmethod
-    def from_unet(
+    def load_unet_weights(
         cls,
-        unet: UNet2DConditionModel,
+        unet,
         controlnet_conditioning_channel_order: str = "rgb",
         conditioning_embedding_out_channels: Optional[Tuple[int, ...]] = (16, 32, 96, 256),
-        load_weights_from_unet: bool = True,
         conditioning_channels: int = 3,
     ):
         ## TODO: modify this to load from the new unet2D class wihtout conditioning  
@@ -315,76 +279,34 @@ class ControlNetModel(nn.Module):
                 The UNet model weights to copy to the [`ControlNetModel`]. All configuration options are also copied
                 where applicable.
         """
-        transformer_layers_per_block = (
-            unet.config.transformer_layers_per_block if "transformer_layers_per_block" in unet.config else 1
-        )
-        encoder_hid_dim = unet.config.encoder_hid_dim if "encoder_hid_dim" in unet.config else None
-        encoder_hid_dim_type = unet.config.encoder_hid_dim_type if "encoder_hid_dim_type" in unet.config else None
-        addition_embed_type = unet.config.addition_embed_type if "addition_embed_type" in unet.config else None
-        addition_time_embed_dim = (
-            unet.config.addition_time_embed_dim if "addition_time_embed_dim" in unet.config else None
-        )
+        
+        controlnet = cls() # call cls like CN diffusers 
 
-        controlnet = cls(
-            encoder_hid_dim=encoder_hid_dim,
-            encoder_hid_dim_type=encoder_hid_dim_type,
-            addition_embed_type=addition_embed_type,
-            addition_time_embed_dim=addition_time_embed_dim,
-            transformer_layers_per_block=transformer_layers_per_block,
-            in_channels=unet.config.in_channels,
-            flip_sin_to_cos=unet.config.flip_sin_to_cos,
-            freq_shift=unet.config.freq_shift,
-            down_block_types=unet.config.down_block_types,
-            only_cross_attention=unet.config.only_cross_attention,
-            block_out_channels=unet.config.block_out_channels,
-            layers_per_block=unet.config.layers_per_block,
-            downsample_padding=unet.config.downsample_padding,
-            mid_block_scale_factor=unet.config.mid_block_scale_factor,
-            act_fn=unet.config.act_fn,
-            norm_num_groups=unet.config.norm_num_groups,
-            norm_eps=unet.config.norm_eps,
-            cross_attention_dim=unet.config.cross_attention_dim,
-            attention_head_dim=unet.config.attention_head_dim,
-            num_attention_heads=unet.config.num_attention_heads,
-            use_linear_projection=unet.config.use_linear_projection,
-            class_embed_type=unet.config.class_embed_type,
-            num_class_embeds=unet.config.num_class_embeds,
-            upcast_attention=unet.config.upcast_attention,
-            resnet_time_scale_shift=unet.config.resnet_time_scale_shift,
-            projection_class_embeddings_input_dim=unet.config.projection_class_embeddings_input_dim,
-            mid_block_type=unet.config.mid_block_type,
-            conditioning_embedding_out_channels=conditioning_embedding_out_channels,
-            conditioning_channels=conditioning_channels,
-        )
+        controlnet.conv_in.load_state_dict(unet.conv_in.state_dict())
+        controlnet.time_proj.load_state_dict(unet.time_proj.state_dict())
+        controlnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
 
-        if load_weights_from_unet:
-            controlnet.conv_in.load_state_dict(unet.conv_in.state_dict())
-            controlnet.time_proj.load_state_dict(unet.time_proj.state_dict())
-            controlnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
-
-            if controlnet.class_embedding:
-                controlnet.class_embedding.load_state_dict(unet.class_embedding.state_dict())
-
-            controlnet.down_blocks.load_state_dict(unet.down_blocks.state_dict())
-            controlnet.mid_block.load_state_dict(unet.mid_block.state_dict())
+        controlnet.down_blocks.load_state_dict(unet.down_blocks.state_dict())
+        controlnet.mid_block.load_state_dict(unet.mid_block.state_dict())
 
         return controlnet
 
     def forward(
         self,
-        sample: torch.FloatTensor,
-        timestep: Union[torch.Tensor, float, int],
-        encoder_hidden_states: torch.Tensor,
-        controlnet_cond: torch.FloatTensor,
-        conditioning_scale: float = 1.0,
-        class_labels: Optional[torch.Tensor] = None,
-        timestep_cond: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
-        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-        guess_mode: bool = False,
-        return_dict: bool = True,
-    ) -> Union[ControlNetOutput, Tuple[Tuple[torch.FloatTensor, ...], torch.FloatTensor]]:
+        # sample: torch.FloatTensor,
+        # timestep: Union[torch.Tensor, float, int],
+        # encoder_hidden_states: torch.Tensor,
+        # controlnet_cond: torch.FloatTensor,
+        # conditioning_scale: float = 1.0,
+        # class_labels: Optional[torch.Tensor] = None,
+        # timestep_cond: Optional[torch.Tensor] = None,
+        # attention_mask: Optional[torch.Tensor] = None,
+        # added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+        # cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        # guess_mode: bool = False,
+        # return_dict: bool = True,
+    ):
+    #  -> Union[ControlNetOutput, Tuple[Tuple[torch.FloatTensor, ...], torch.FloatTensor]]:
         """
         The [`ControlNetModel`] forward method.
 
