@@ -151,6 +151,34 @@ def map_vae_weights(key, value):
 
     return [(key, _from_numpy(value))]
 
+def map_cn_weights(key, value):
+    if "to_k" in key:
+        key = key.replace("to_k", "key_proj")
+    if "to_out.0" in key:
+        key = key.replace("to_out.0", "out_proj")
+    if "to_q" in key:
+        key = key.replace("to_q", "query_proj")
+    if "to_v" in key:
+        key = key.replace("to_v", "value_proj")
+
+    # Map the mid block
+    if "mid_block.resnets.0" in key:
+        key = key.replace("mid_block.resnets.0", "mid_blocks.0")
+    if "mid_block.attentions.0" in key:
+        key = key.replace("mid_block.attentions.0", "mid_blocks.1")
+    if "mid_block.resnets.1" in key:
+        key = key.replace("mid_block.resnets.1", "mid_blocks.2")
+
+    if "ff.net.2" in key:
+        key = key.replace("ff.net.2", "linear3")
+    if "ff.net.0" in key:
+        k1 = key.replace("ff.net.0.proj", "linear1")
+        k2 = key.replace("ff.net.0.proj", "linear2")
+        v1, v2 = np.split(value, 2)
+
+        return [(k1, _from_numpy(v1)), (k2, _from_numpy(v2))]
+
+    return [(key, _from_numpy(value))]
 
 def _flatten(params):
     return [(k, v) for p in params for (k, v) in p]
@@ -225,8 +253,8 @@ def load_controlnet( unet_config: UNetConfig, key: str =_DEFAULT_CN_MODEL):
     weight_file = hf_hub_download(key, "diffusion_pytorch_model.safetensors")
     # mx.eval(model.parameters())
     breakpoint()
-    print(model.parameters())
-    _load_safetensor_weights(map_unet_weights, model, weight_file)
+    _load_safetensor_weights(map_cn_weights, model, weight_file)
+    breakpoint()
 
     return model 
 

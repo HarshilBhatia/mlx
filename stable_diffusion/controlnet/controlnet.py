@@ -11,7 +11,8 @@ from .config import ControlNetConfig,UNetConfig
 def zero_module(module):
     #  TODO: check why this is used.  
     # for p in module.parameters():
-    #     nn.init.zeros_(p)
+        # nn.init.zeros_(p)
+        # p = torch.zeros_like(p)
     return module
 
 class ControlNetConditioningEmbedding(nn.Module):
@@ -261,35 +262,6 @@ class ControlNetModel(nn.Module):
                 groups=unet_config.norm_num_groups,
             ),
         ]
-        
-    @classmethod
-    def load_unet_weights(
-        cls,
-        unet,
-        controlnet_conditioning_channel_order: str = "rgb",
-        conditioning_embedding_out_channels: Optional[Tuple[int, ...]] = (16, 32, 96, 256),
-        conditioning_channels: int = 3,
-    ):
-        ## TODO: modify this to load from the new unet2D class wihtout conditioning  
-        r"""
-        Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
-
-        Parameters:
-            unet (`UNet2DConditionModel`):
-                The UNet model weights to copy to the [`ControlNetModel`]. All configuration options are also copied
-                where applicable.
-        """
-        
-        controlnet = cls() # call cls like CN diffusers 
-
-        controlnet.conv_in.load_state_dict(unet.conv_in.state_dict())
-        controlnet.time_proj.load_state_dict(unet.time_proj.state_dict())
-        controlnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
-
-        controlnet.down_blocks.load_state_dict(unet.down_blocks.state_dict())
-        controlnet.mid_block.load_state_dict(unet.mid_block.state_dict())
-
-        return controlnet
 
     def forward(
         self,
